@@ -1,4 +1,4 @@
-# loopcraft v0.2
+# loopcraft v0.2.1
 
 A project-agnostic harness that stacks the loops from the "Loopcraft" diagram
 on top of the agent CLIs you already have installed and logged in.
@@ -68,18 +68,18 @@ One file, zero dependencies, Python 3.9+. Pick one:
 **Onto your PATH (run `loopcraft` from any project root or VM):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.1/install.sh | bash
 ```
 
 Installs to `~/.local/bin/loopcraft` (override with `LOOPCRAFT_BIN`, pin a
 different ref with `LOOPCRAFT_REF`). `curl | bash` runs remote code — the
-one-liner is pinned to the `v0.2` tag so it can't change under you; read
+one-liner is pinned to the `v0.2.1` tag so it can't change under you; read
 `install.sh` first if you'd rather not pipe to a shell.
 
 **Or just grab the single file into one project (no install):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2/loopcraft.py -o loopcraft.py
+curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.1/loopcraft.py -o loopcraft.py
 python3 loopcraft.py --help
 ```
 

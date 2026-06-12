@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-loopcraft v0.2 — a project-agnostic stacked-loop agent harness.
+loopcraft v0.2.1 — a project-agnostic stacked-loop agent harness.
 
 Loop 1 (tokens)   : inside the model. free.
 Loop 2 (turn)     : one headless CLI invocation (claude -p / codex exec).
@@ -277,16 +277,20 @@ JUDGE_INSTRUCTIONS = (
     "the goal.\n"
     "Everything you need is in the text below — do NOT use any tools, do NOT "
     "open or read files. Answer directly from the provided evidence.\n"
+    "A verdict of 'pass' must be backed by objective evidence in EVIDENCE — a "
+    "passing verify result and/or a diff showing the change. If EVIDENCE shows "
+    "no diff and no verify result, you cannot confirm the work actually "
+    "landed; return 'fail'. The agent's report alone is never sufficient.\n"
     'Respond with ONLY a JSON object: {"verdict": "pass" or "fail", '
     '"risk": "low" or "medium" or "high", '
     '"feedback": "specific, actionable fixes if fail"}'
 )
 
 
-def decide_verdict(goal, result, evidence, verify_rc, args, cwd, log):
+def decide_verdict(goal, result, evidence, verify_rc, has_diff, args, cwd, log):
     """Single place that turns evidence into pass/fail. verify-only skips the
     LLM entirely; otherwise the LLM judges but can never override a failing
-    verify command."""
+    verify command, nor certify a pass with no objective evidence at all."""
     if args.judge == "verify-only":
         if verify_rc is None:
             return {"verdict": "fail", "risk": "high",
@@ -306,6 +310,20 @@ def decide_verdict(goal, result, evidence, verify_rc, args, cwd, log):
                    "feedback": f"The verification command failed "
                                f"(exit {verify_rc}). Fix it. "
                                + str(verdict.get("feedback") or "")}
+    # No-objective-evidence guard. A "pass" must rest on something checkable: a
+    # passing verify OR an actual diff. With neither (no --verify ran AND the
+    # tree shows no change — e.g. -C pointed at a non-git dir), the judge has
+    # only the agent's self-report, which can certify work that never landed.
+    if verdict["verdict"] == "pass" and verify_rc is None and not has_diff:
+        log("  OVERRIDE: pass with no objective evidence "
+            "(no verify ran, no git diff) -> fail")
+        verdict = {"verdict": "fail", "risk": "high",
+                   "feedback": "No objective evidence the work was done: no "
+                   "--verify command ran and the target shows no git diff (is "
+                   "it a git repo?). Refusing to certify success on the agent's "
+                   "report alone — add a real --verify (e.g. a file/content "
+                   "assertion) or run inside the git repo that should receive "
+                   "the change."}
     return verdict
 
 
@@ -360,10 +378,13 @@ def judge(goal, result, evidence, judge_spec, cwd, args, log):
 # ---------------------------------------------------------------- evidence
 
 def gather_evidence(cwd, verify, timeout, args, log):
-    """Returns (evidence_text, verify_rc). verify_rc is None if no verify."""
-    chunks, verify_rc = [], None
+    """Returns (evidence_text, verify_rc, has_diff). verify_rc is None if no
+    verify ran; has_diff is True only when git shows actual working-tree changes
+    (so callers can tell apparent success from objectively-evidenced success)."""
+    chunks, verify_rc, has_diff = [], None, False
     rc, out, _ = git(cwd, "status", "--porcelain")
     if rc == 0:
+        has_diff = bool(out.strip())
         chunks.append("git status (changed files):\n"
                       + (out.strip()[:1500] or "(clean)"))
         _, stat, _ = git(cwd, "diff", "--stat")
@@ -379,7 +400,7 @@ def gather_evidence(cwd, verify, timeout, args, log):
                       f"output tail:\n{tail}")
         chunks.append("VERIFY RESULT: "
                       + ("PASSED" if verify_rc == 0 else "FAILED"))
-    return redact("\n\n".join(chunks)), verify_rc
+    return redact("\n\n".join(chunks)), verify_rc, has_diff
 
 
 # ---------------------------------------------------------------- loop 3
@@ -394,10 +415,10 @@ def goal_loop(goal, worker_name, cwd, args, log, tag=""):
         prompt = worker_prompt(goal, feedback, attempt, args.verify)
         result = run_fn(prompt, cwd, args, log)
         log.save(f"attempt{tag}-{attempt}-{worker_name}.txt", result["report"])
-        evidence, verify_rc = gather_evidence(cwd, args.verify, args.timeout,
-                                              args, log)
+        evidence, verify_rc, has_diff = gather_evidence(
+            cwd, args.verify, args.timeout, args, log)
         verdict = decide_verdict(goal, result, evidence, verify_rc,
-                                 args, cwd, log)
+                                 has_diff, args, cwd, log)
         log(f"  verdict: {verdict['verdict']} (risk {verdict.get('risk')}) "
             f"{str(verdict.get('feedback') or '')[:120]}")
         if verdict["verdict"] == "pass":
@@ -550,7 +571,8 @@ def race(goal, cwd, args, log):
         # base movement, generated files). Re-verify in the real checkout.
         if args.verify:
             log("  post-merge verify in target checkout...")
-            _, pmrc = gather_evidence(cwd, args.verify, args.timeout, args, log)
+            _, pmrc, _ = gather_evidence(cwd, args.verify, args.timeout,
+                                         args, log)
             if pmrc not in (None, 0):
                 log(f"  POST-MERGE VERIFY FAILED (exit {pmrc}) — rolling back "
                     f"to {base_sha[:8]}; branch {winner['branch']} kept for "
@@ -578,10 +600,10 @@ def relay(goal, cwd, args, log):
                                extra=f"Your role this round: {role}.")
         result = WORKERS[w](prompt, cwd, args, log)
         log.save(f"relay-{attempt}-{w}.txt", result["report"])
-        evidence, verify_rc = gather_evidence(cwd, args.verify, args.timeout,
-                                              args, log)
+        evidence, verify_rc, has_diff = gather_evidence(
+            cwd, args.verify, args.timeout, args, log)
         verdict = decide_verdict(goal, result, evidence, verify_rc,
-                                 args, cwd, log)
+                                 has_diff, args, cwd, log)
         log(f"  verdict: {verdict['verdict']} (risk {verdict.get('risk')})")
         if verdict["verdict"] == "pass":
             return True
@@ -696,6 +718,20 @@ def preflight(args, cwd, log):
             "--safety yolo disables permission prompts and sandboxing.\n"
             "Run it only in a container/VM or disposable checkout, and "
             "confirm with --i-understand-yolo.")
+    # A non-git target produces no diff evidence; with --verify none that
+    # leaves the judge nothing objective to check, and runs can "pass" on the
+    # agent's word alone. Warn loudly, and point at child repos if this looks
+    # like a container directory (-C parent instead of the actual repo).
+    rc, _, _ = git(cwd, "rev-parse", "--is-inside-work-tree")
+    if rc != 0:
+        log("WARNING: target is not a git repository — no diff evidence will "
+            "be available. Pair with a real --verify, or success can't be "
+            "objectively confirmed (see the no-evidence guard).")
+        kids = sorted({p.parent.name for p in Path(cwd).glob("*/.git")})
+        if kids:
+            shown = ", ".join(kids[:6]) + ("…" if len(kids) > 6 else "")
+            log(f"  NOTE: this dir contains child git repos ({shown}). Did you "
+                "mean to point -C at one of those instead?")
 
 
 def resolve_verify(args, cwd, log):
@@ -716,7 +752,7 @@ def resolve_verify(args, cwd, log):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="loopcraft v0.2: stacked-loop agent harness "
+        description="loopcraft v0.2.1: stacked-loop agent harness "
                     "(workers = your local CLI logins, judge = cheap "
                     "OpenRouter). Local/personal use only.")
     ap.add_argument("-g", "--goal", help="single goal to achieve (loop 3/4)")
@@ -779,7 +815,7 @@ def main():
     log = Log(cwd)
     ensure_git_exclude(cwd)
     acquire_lock(cwd, args.force_unlock, log)
-    log(f"loopcraft v0.2 start  project={cwd}  mode={args.mode}  "
+    log(f"loopcraft v0.2.1 start  project={cwd}  mode={args.mode}  "
         f"safety={args.safety}  judge={args.judge}")
     resolve_verify(args, cwd, log)
     preflight(args, cwd, log)
