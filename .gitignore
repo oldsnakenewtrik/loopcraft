@@ -1,0 +1,14 @@
+# loopcraft run state (created inside target repos, never here — belt & braces)
+.loopcraft/
+
+# python
+__pycache__/
+*.pyc
+
+# local user artifacts — backlogs are yours, not part of the tool
+goals.md
+backlog.md
+
+# editor / OS noise
+.DS_Store
+*.swp
