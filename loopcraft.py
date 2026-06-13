@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-loopcraft v0.2.1 — a project-agnostic stacked-loop agent harness.
+loopcraft v0.2.2 — a project-agnostic stacked-loop agent harness.
 
 Loop 1 (tokens)   : inside the model. free.
 Loop 2 (turn)     : one headless CLI invocation (claude -p / codex exec).
@@ -104,6 +104,10 @@ class Log:
         self.dir = project / ".loopcraft" / f"run-{stamp}"
         self.dir.mkdir(parents=True, exist_ok=True)
         self.file = open(self.dir / "run.log", "a", encoding="utf-8")
+        self.cost_usd = 0.0   # summed across worker calls that report cost
+
+    def add_cost(self, usd):
+        self.cost_usd += (usd or 0.0)
 
     def __call__(self, msg: str):
         line = f"[{datetime.now().strftime('%H:%M:%S')}] {redact(msg)}"
@@ -160,18 +164,33 @@ def run_claude_worker(prompt, cwd, args, log):
         cmd += ["--model", args.claude_model]
     log(f"  worker=claude  (safety={args.safety}, max {args.max_turns} turns)")
     rc, out, err = run_cmd(cmd, cwd, args.timeout, env=child_env(args))
-    text, meta = out.strip(), {}
+    text, meta, hit_cap = out.strip(), {}, False
     try:
         obj = json.loads(out)
         text = obj.get("result") or text
         meta = {k: obj.get(k) for k in
                 ("num_turns", "duration_ms", "total_cost_usd", "session_id")
                 if k in obj}
+        hit_cap = obj.get("subtype") == "error_max_turns"
     except (json.JSONDecodeError, TypeError):
         pass
+    cost = meta.get("total_cost_usd")
+    if cost is not None:
+        log.add_cost(cost)
+        log(f"  claude: {meta.get('num_turns', '?')} turns, ${cost:.2f}")
+    if hit_cap:
+        # The attempt was cut off mid-task. Surface it as actionable (raise
+        # --max-turns) and tell the judge/next attempt the work is partial —
+        # otherwise it just looks like an opaque verify failure.
+        log(f"  WARNING: claude hit the --max-turns cap ({args.max_turns}); "
+            "attempt cut off mid-task. Raise --max-turns for large goals.")
+        text = (f"[loopcraft: this attempt hit the --max-turns limit "
+                f"({args.max_turns}) and was cut off before finishing — the "
+                f"work below is incomplete.]\n\n{text}")
     if rc != 0 and not text:
         text = f"[claude exited {rc}] {err.strip()[-1500:]}"
-    return {"worker": "claude", "rc": rc, "report": redact(text), "meta": meta}
+    return {"worker": "claude", "rc": rc, "report": redact(text),
+            "meta": meta, "hit_cap": hit_cap}
 
 
 def run_codex_worker(prompt, cwd, args, log):
@@ -431,9 +450,21 @@ def goal_loop(goal, worker_name, cwd, args, log, tag=""):
 # ---------------------------------------------------------------- loop 4
 
 def ensure_git_exclude(cwd):
-    """Keep loopcraft's own state out of the user's repo."""
-    info = cwd / ".git" / "info"
-    if not info.is_dir():
+    """Keep loopcraft's own state out of the user's repo. Resolves the shared
+    git common dir, so this also works inside a worktree — where `.git` is a
+    file (not a dir) and info/exclude lives in the main repo's git dir. The old
+    `cwd/.git/info` check silently no-op'd in worktrees, leaking `.loopcraft/`
+    into `git status`."""
+    rc, common, _ = git(cwd, "rev-parse", "--git-common-dir")
+    if rc != 0:
+        return
+    gitdir = Path(common.strip())
+    if not gitdir.is_absolute():
+        gitdir = (cwd / gitdir).resolve()
+    info = gitdir / "info"
+    try:
+        info.mkdir(parents=True, exist_ok=True)
+    except OSError:
         return
     exclude = info / "exclude"
     existing = exclude.read_text(encoding="utf-8") if exclude.exists() else ""
@@ -752,7 +783,7 @@ def resolve_verify(args, cwd, log):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="loopcraft v0.2.1: stacked-loop agent harness "
+        description="loopcraft v0.2.2: stacked-loop agent harness "
                     "(workers = your local CLI logins, judge = cheap "
                     "OpenRouter). Local/personal use only.")
     ap.add_argument("-g", "--goal", help="single goal to achieve (loop 3/4)")
@@ -815,7 +846,7 @@ def main():
     log = Log(cwd)
     ensure_git_exclude(cwd)
     acquire_lock(cwd, args.force_unlock, log)
-    log(f"loopcraft v0.2.1 start  project={cwd}  mode={args.mode}  "
+    log(f"loopcraft v0.2.2 start  project={cwd}  mode={args.mode}  "
         f"safety={args.safety}  judge={args.judge}")
     resolve_verify(args, cwd, log)
     preflight(args, cwd, log)
@@ -824,7 +855,8 @@ def main():
         ok = backlog_loop(args.backlog, cwd, args, log)
     else:
         ok = dispatch(args.goal, cwd, args, log)
-    log(f"loopcraft done  success={ok}  logs={log.dir}")
+    cost = (f"  claude-cost=${log.cost_usd:.2f}" if log.cost_usd else "")
+    log(f"loopcraft done  success={ok}  logs={log.dir}{cost}")
     sys.exit(0 if ok else 1)
 
 
