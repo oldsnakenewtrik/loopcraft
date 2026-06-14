@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-loopcraft v0.2.2 — a project-agnostic stacked-loop agent harness.
+loopcraft v0.2.3 — a project-agnostic stacked-loop agent harness.
 
 Loop 1 (tokens)   : inside the model. free.
 Loop 2 (turn)     : one headless CLI invocation (claude -p / codex exec).
@@ -26,11 +26,13 @@ Zero dependencies. Python 3.9+. State & logs land in <project>/.loopcraft/.
 
 import argparse
 import atexit
+import concurrent.futures as futures
 import json
 import os
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.request
 import urllib.error
@@ -105,15 +107,18 @@ class Log:
         self.dir.mkdir(parents=True, exist_ok=True)
         self.file = open(self.dir / "run.log", "a", encoding="utf-8")
         self.cost_usd = 0.0   # summed across worker calls that report cost
+        self._lock = threading.Lock()  # parallel race contenders share this Log
 
     def add_cost(self, usd):
-        self.cost_usd += (usd or 0.0)
+        with self._lock:
+            self.cost_usd += (usd or 0.0)
 
     def __call__(self, msg: str):
         line = f"[{datetime.now().strftime('%H:%M:%S')}] {redact(msg)}"
-        print(line, flush=True)
-        self.file.write(line + "\n")
-        self.file.flush()
+        with self._lock:
+            print(line, flush=True)
+            self.file.write(line + "\n")
+            self.file.flush()
 
     def save(self, name: str, content: str):
         (self.dir / name).write_text(redact(content or ""), encoding="utf-8")
@@ -540,80 +545,148 @@ def require_clean_git(cwd):
                          "(commit/stash first).")
 
 
+def _pick_winner(goal, passing, args, cwd, log):
+    """Choose among passing contenders. verify-only has no LLM to compare them,
+    so it takes the first; claude / codex / openrouter judges actually compare.
+    (Previously only openrouter was wired in — a paid claude/codex judge was
+    silently ignored and the first contender always won ties.)"""
+    if len(passing) == 1:
+        return passing[0]
+    prompt = ("Pick the best solution for the goal. Respond ONLY with JSON "
+              '{"winner": "<worker name>", "why": "..."}.\n'
+              f"GOAL: {goal}\n\n" +
+              "\n\n".join(f"CANDIDATE {e['worker']} (passed={e['passed']}, "
+                          f"risk={e['risk']})\n{e['diffstat']}\n{e['summary'][:800]}"
+                          for e in passing))
+    spec, raw = args.judge, None
+    if spec.startswith("openrouter:"):
+        raw = openrouter_chat(spec.split(":", 1)[1],
+                              [{"role": "user", "content": redact(prompt)}])
+    elif spec == "claude":
+        _, out, _ = run_cmd(["claude", "-p", redact(prompt), "--output-format",
+                             "json", "--max-turns", "6"], cwd, 300,
+                            env=child_env(args))
+        try:
+            raw = json.loads(out).get("result", out)
+        except (json.JSONDecodeError, TypeError):
+            raw = out
+    elif spec == "codex":
+        _, raw, _ = run_cmd(["codex", "exec", "--skip-git-repo-check", "--sandbox",
+                             "read-only", "-C", str(cwd), redact(prompt)],
+                            cwd, 300, env=child_env(args))
+    pick = (extract_json(raw) or {}).get("winner") if raw else None
+    if pick:
+        log(f"  judge ({spec}) picked: {pick}")
+    return next((e for e in passing if e["worker"] == pick), passing[0])
+
+
 def race(goal, cwd, args, log):
-    """Each contender gets its own git WORKTREE from the same base commit —
-    branches alone don't isolate untracked files, caches, or build junk."""
+    """Contenders run CONCURRENTLY, each in its own git WORKTREE off the same
+    base commit (branches alone don't isolate untracked files/caches/builds).
+    Worktree create + finalize are serial for git-ref safety; the agent work
+    runs in parallel threads — a real wall-clock win since it's subprocess-bound.
+    Per-worktree --worktree-setup runs first (e.g. installing deps a fresh
+    checkout lacks). Loser branches are pruned unless --keep-branches."""
     require_clean_git(cwd)
-    _, base_ref, _ = git(cwd, "rev-parse", "--abbrev-ref", "HEAD")
-    base_ref = base_ref.strip() or "main"
+    _, head_branch, _ = git(cwd, "symbolic-ref", "--short", "-q", "HEAD")
+    base_ref = head_branch.strip()              # "" => detached HEAD
     _, base_sha, _ = git(cwd, "rev-parse", "HEAD")
     base_sha = base_sha.strip()
     contenders = [w.strip() for w in args.race_workers.split(",")]
     wt_root = cwd / ".loopcraft" / "worktrees" / f"run-{log.stamp}"
     wt_root.mkdir(parents=True, exist_ok=True)
-    entries = []
+
+    # Phase 1 (serial): one worktree per contender — git ref creation.
+    live = []
     for w in contenders:
-        branch = f"loopcraft/{w}-{log.stamp}"
-        wt = wt_root / w
-        log(f"loop4 race: contender '{w}' -> worktree {wt} (branch {branch})")
-        rc, _, err = git(cwd, "worktree", "add", "-b", branch,
-                         str(wt), base_sha)
+        branch, wt = f"loopcraft/{w}-{log.stamp}", wt_root / w
+        rc, _, err = git(cwd, "worktree", "add", "-b", branch, str(wt), base_sha)
         if rc != 0:
-            log(f"  worktree add failed: {err.strip()[:300]} — skipping {w}")
+            log(f"loop4 race: worktree add failed for {w}: "
+                f"{err.strip()[:200]} — skipping")
             continue
+        log(f"loop4 race: contender '{w}' -> {wt} (branch {branch})")
+        live.append({"worker": w, "branch": branch, "wt": wt})
+    if not live:
+        log("loop4: no contenders could start")
+        return False
+
+    # Phase 2 (parallel): per-contender worktree-setup + goal_loop.
+    def run_one(c):
+        w, wt = c["worker"], c["wt"]
+        if args.worktree_setup:
+            log(f"  [{w}] worktree-setup: {args.worktree_setup}")
+            rc, _, serr = run_cmd(["bash", "-lc", args.worktree_setup], wt,
+                                  args.timeout, env=child_env(args))
+            if rc != 0:
+                log(f"  [{w}] worktree-setup FAILED (exit {rc}): "
+                    f"{serr.strip()[-300:]}")
+                return c, False, {"risk": "high"}, \
+                    {"report": f"worktree-setup failed (exit {rc})"}
         ok, verdict, result = goal_loop(goal, w, wt, args, log, tag=f"-{w}")
+        return c, ok, verdict, result
+
+    if len(live) == 1:
+        results = [run_one(live[0])]
+    else:
+        with futures.ThreadPoolExecutor(max_workers=len(live)) as ex:
+            results = [f.result()
+                       for f in [ex.submit(run_one, c) for c in live]]
+
+    # Phase 3 (serial): finalize each worktree — commit (only if changed),
+    # capture diffstat, remove the worktree.
+    entries = []
+    for c, ok, verdict, result in results:
+        w, wt, branch = c["worker"], c["wt"], c["branch"]
         git(wt, "add", "-A")
-        git(wt, "commit", "-m", f"loopcraft[{w}]: {goal[:60]}",
-            "--allow-empty")
+        _, staged, _ = git(wt, "diff", "--cached", "--name-only")
+        if staged.strip():
+            git(wt, "commit", "-m", f"loopcraft[{w}]: {goal[:60]}")
         _, diff, _ = git(cwd, "diff", "--stat", f"{base_sha}..{branch}")
         entries.append({"worker": w, "branch": branch, "passed": ok,
                         "risk": verdict.get("risk", "high"),
                         "summary": result["report"][:2000],
-                        "diffstat": diff[:1500]})
+                        "diffstat": diff.strip()[:1500] or "(no changes)"})
         git(cwd, "worktree", "remove", "--force", str(wt))
-    if not entries:
-        log("loop4: no contenders completed")
-        return False
+
     passing = [e for e in entries if e["passed"]] or entries
-    if len(passing) == 1:
-        winner = passing[0]
-    else:
-        prompt = ("Pick the best solution for the goal. Respond ONLY with "
-                  'JSON {"winner": "<worker name>", "why": "..."}.\n'
-                  f"GOAL: {goal}\n\n" +
-                  "\n\n".join(f"CANDIDATE {e['worker']} "
-                              f"(passed={e['passed']}, risk={e['risk']})\n"
-                              f"{e['diffstat']}\n{e['summary'][:800]}"
-                              for e in passing))
-        if args.judge.startswith("openrouter:"):
-            raw = openrouter_chat(args.judge.split(":", 1)[1],
-                                  [{"role": "user", "content": redact(prompt)}])
-        else:
-            raw = json.dumps({"winner": passing[0]["worker"]})
-        pick = (extract_json(raw) or {}).get("winner")
-        winner = next((e for e in passing if e["worker"] == pick), passing[0])
+    winner = _pick_winner(goal, passing, args, cwd, log)
     log(f"loop4 winner: {winner['worker']} on {winner['branch']} "
         f"(passed={winner['passed']}, risk={winner['risk']})")
+
+    losers = [e for e in entries if e["branch"] != winner["branch"]]
+    if args.keep_branches:
+        log("kept all branches: " + ", ".join(e["branch"] for e in entries))
+    else:
+        for e in losers:
+            git(cwd, "branch", "-D", e["branch"])
+        if losers:
+            log(f"  pruned {len(losers)} loser branch(es) "
+                "(use --keep-branches to retain)")
+
     if args.merge_winner and winner["passed"]:
+        if not base_ref:
+            log("  --merge-winner skipped: detached HEAD, no branch to merge "
+                f"into. Winner branch {winner['branch']} kept.")
+            return True
         git(cwd, "merge", "--no-ff", winner["branch"],
             "-m", f"loopcraft: merge winner {winner['worker']}")
         log(f"merged {winner['branch']} into {base_ref}")
-        # A patch can pass in isolation but break after merge (conflicts,
-        # base movement, generated files). Re-verify in the real checkout.
+        # A patch can pass in isolation but break after merge (conflicts, base
+        # movement, generated files). Re-verify in the real checkout.
         if args.verify:
             log("  post-merge verify in target checkout...")
             _, pmrc, _ = gather_evidence(cwd, args.verify, args.timeout,
                                          args, log)
             if pmrc not in (None, 0):
                 log(f"  POST-MERGE VERIFY FAILED (exit {pmrc}) — rolling back "
-                    f"to {base_sha[:8]}; branch {winner['branch']} kept for "
-                    "manual inspection")
+                    f"to {base_sha[:8]}; branch {winner['branch']} kept")
                 git(cwd, "reset", "--hard", base_sha)
                 return False
             log("  post-merge verify passed")
-    else:
-        log("review branches manually, then merge the one you like: "
-            + ", ".join(e["branch"] for e in entries))
+    elif not args.merge_winner:
+        log(f"not merging (--merge-winner off); winner branch "
+            f"{winner['branch']} kept for review.")
     return winner["passed"]
 
 
@@ -783,7 +856,7 @@ def resolve_verify(args, cwd, log):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="loopcraft v0.2.2: stacked-loop agent harness "
+        description="loopcraft v0.2.3: stacked-loop agent harness "
                     "(workers = your local CLI logins, judge = cheap "
                     "OpenRouter). Local/personal use only.")
     ap.add_argument("-g", "--goal", help="single goal to achieve (loop 3/4)")
@@ -823,6 +896,13 @@ def main():
                          "worker subprocesses (may bill your API accounts)")
     ap.add_argument("--merge-winner", action="store_true",
                     help="race mode: auto-merge winning branch if it passed")
+    ap.add_argument("--worktree-setup", default=None,
+                    help="race mode: shell command run once in each fresh "
+                         "worktree before the agent (e.g. 'pnpm install') — a "
+                         "fresh checkout lacks gitignored deps like node_modules")
+    ap.add_argument("--keep-branches", action="store_true",
+                    help="race mode: keep loser branches (default: prune them, "
+                         "keeping only the winner)")
     ap.add_argument("--max-goals", type=int, default=0,
                     help="loop 5: stop after N goals this run (0 = all)")
     ap.add_argument("--stop-on-fail", action="store_true",
@@ -846,7 +926,7 @@ def main():
     log = Log(cwd)
     ensure_git_exclude(cwd)
     acquire_lock(cwd, args.force_unlock, log)
-    log(f"loopcraft v0.2.2 start  project={cwd}  mode={args.mode}  "
+    log(f"loopcraft v0.2.3 start  project={cwd}  mode={args.mode}  "
         f"safety={args.safety}  judge={args.judge}")
     resolve_verify(args, cwd, log)
     preflight(args, cwd, log)

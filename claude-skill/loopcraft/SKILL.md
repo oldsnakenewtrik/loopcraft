@@ -166,12 +166,17 @@ failed*, since those mean very different things.
 
 ## Escalating beyond single mode
 
-- **Race** — N agents, same goal, each in its own git **worktree**; best passing
-  branch wins, merged only with `--merge-winner` (loopcraft re-verifies in the
-  real checkout post-merge, rolls back if it breaks). Needs a clean tree.
-  `--mode race --race-workers claude,codex --merge-winner`
-- **Relay** — builder/reviewer alternation in one tree; judge referees.
-  `--mode relay --race-workers claude,codex`
+- **Race** — N agents run the same goal **concurrently**, each in its own git
+  **worktree**; best passing branch wins, merged only with `--merge-winner`
+  (loopcraft re-verifies in the real checkout post-merge, rolls back if it
+  breaks). Needs a clean tree. Two gotchas: a fresh worktree has no gitignored
+  deps, so pass `--worktree-setup "<install cmd>"` if verify needs them; and to
+  actually *pick the best* of several passers use an LLM judge
+  (`--judge claude`/`codex`/`openrouter:<model>`) — `verify-only` just takes the
+  first. Loser branches are pruned unless `--keep-branches`.
+  `--mode race --race-workers claude,codex --worktree-setup "npm ci" --judge claude --merge-winner`
+- **Relay** — builder/reviewer alternation in one tree (already has deps); judge
+  referees. `--mode relay --race-workers claude,codex`
 
 ## Cleanup
 

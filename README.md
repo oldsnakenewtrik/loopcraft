@@ -1,4 +1,4 @@
-# loopcraft v0.2.2
+# loopcraft v0.2.3
 
 A project-agnostic harness that stacks the loops from the "Loopcraft" diagram
 on top of the agent CLIs you already have installed and logged in.
@@ -68,18 +68,18 @@ One file, zero dependencies, Python 3.9+. Pick one:
 **Onto your PATH (run `loopcraft` from any project root or VM):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.2/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.3/install.sh | bash
 ```
 
 Installs to `~/.local/bin/loopcraft` (override with `LOOPCRAFT_BIN`, pin a
 different ref with `LOOPCRAFT_REF`). `curl | bash` runs remote code — the
-one-liner is pinned to the `v0.2.2` tag so it can't change under you; read
+one-liner is pinned to the `v0.2.3` tag so it can't change under you; read
 `install.sh` first if you'd rather not pipe to a shell.
 
 **Or just grab the single file into one project (no install):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.2/loopcraft.py -o loopcraft.py
+curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.3/loopcraft.py -o loopcraft.py
 python3 loopcraft.py --help
 ```
 
@@ -115,18 +115,31 @@ you what to pass. For docs-only tasks, say so explicitly: `--verify none`.
 
 Once single mode behaves on your repo, graduate to the fancier loops:
 
-**Race (loop 4).** Each contender gets its own **git worktree** checked out
-from the same base commit — branches alone don't isolate untracked files,
-caches, or build artifacts, so concurrent-ish agents would stomp each other.
-Each worktree is verified independently; the winning branch is merged only if
-it passed *and* you said `--merge-winner`. After merging, loopcraft **re-runs
+**Race (loop 4).** Contenders run **concurrently**, each in its own **git
+worktree** off the same base commit — branches alone don't isolate untracked
+files, caches, or build artifacts, so agents would stomp each other. Each
+worktree is verified independently; the winning branch is merged only if it
+passed *and* you said `--merge-winner`. After merging, loopcraft **re-runs
 `--verify` in the real checkout** — a patch can pass in isolation but break on
 merge (conflicts, base movement, generated files) — and rolls back to the base
 commit if that final verify fails, leaving the winner branch for you to inspect.
 
+Two race gotchas worth knowing:
+
+- A fresh worktree has **no gitignored deps** (`node_modules`, `.venv`, build
+  caches). If your verify needs them, install them once per worktree with
+  `--worktree-setup "pnpm install"` (or `uv sync`, etc.).
+- Picking the *best* of several passing contenders needs a judge that can
+  compare them: `--judge openrouter:<model>`, `--judge claude`, or `--judge
+  codex`. With `--judge verify-only` there's no LLM to compare, so the first
+  passing contender wins. Loser branches are pruned after (keep them with
+  `--keep-branches`).
+
 ```bash
 python3 loopcraft.py -C ~/code/myproject -g "..." \
-  --mode race --verify "npm test" --merge-winner
+  --mode race --race-workers claude,codex \
+  --verify "npm test" --worktree-setup "npm ci" \
+  --judge claude --merge-winner
 ```
 
 **Relay (loop 4).** Builder/reviewer alternation in one tree: one agent
@@ -219,4 +232,5 @@ each attempt's (redacted) agent report. `.loopcraft/` is auto-added to
 `--max-attempts` (loop-3 retries, default 4) · `--max-turns` (per-Claude
 tool-call cap, default 30) · `--timeout` (seconds per worker run, default
 1800) · `--claude-model` / `--codex-model` · `--race-workers a,b` ·
+`--worktree-setup "<cmd>"` / `--keep-branches` (race) ·
 `--max-goals` / `--stop-on-fail` / `--sleep` (loop 5).
