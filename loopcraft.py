@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-loopcraft v0.2.4 — a project-agnostic stacked-loop agent harness.
+loopcraft v0.2.5 — a project-agnostic stacked-loop agent harness.
 
 Loop 1 (tokens)   : inside the model. free.
 Loop 2 (turn)     : one headless CLI invocation (claude -p / codex exec).
@@ -545,11 +545,12 @@ def require_clean_git(cwd):
                          "(commit/stash first).")
 
 
-def _pick_winner(goal, passing, args, cwd, log):
-    """Choose among passing contenders. verify-only has no LLM to compare them,
-    so it takes the first; claude / codex / openrouter judges actually compare.
-    (Previously only openrouter was wired in — a paid claude/codex judge was
-    silently ignored and the first contender always won ties.)"""
+def _pick_winner(goal, passing, spec, args, cwd, log):
+    """Choose among passing contenders using judge `spec` (which may differ from
+    the per-attempt judge — see --winner-judge). verify-only / unknown specs
+    have no LLM to compare with, so they take the first passer; claude / codex /
+    openrouter (incl. openrouter/fusion) actually deliberate over the candidates.
+    The winner-pick runs once, so it's the right place for a heavyweight judge."""
     if len(passing) == 1:
         return passing[0]
     prompt = ("Pick the best solution for the goal. Respond ONLY with JSON "
@@ -558,7 +559,7 @@ def _pick_winner(goal, passing, args, cwd, log):
               "\n\n".join(f"CANDIDATE {e['worker']} (passed={e['passed']}, "
                           f"risk={e['risk']})\n{e['diffstat']}\n{e['summary'][:800]}"
                           for e in passing))
-    spec, raw = args.judge, None
+    raw = None
     if spec.startswith("openrouter:"):
         raw = openrouter_chat(spec.split(":", 1)[1],
                               [{"role": "user", "content": redact(prompt)}])
@@ -650,7 +651,8 @@ def race(goal, cwd, args, log):
         git(cwd, "worktree", "remove", "--force", str(wt))
 
     passing = [e for e in entries if e["passed"]] or entries
-    winner = _pick_winner(goal, passing, args, cwd, log)
+    winner = _pick_winner(goal, passing, args.winner_judge or args.judge,
+                          args, cwd, log)
     log(f"loop4 winner: {winner['worker']} on {winner['branch']} "
         f"(passed={winner['passed']}, risk={winner['risk']})")
 
@@ -807,11 +809,13 @@ def preflight(args, cwd, log):
         log("NOTE: `claude -p` quota accounting is provider-defined and may "
             "differ from interactive Claude Code usage; run `claude /status` "
             "interactively if unsure.")
-    if args.judge.startswith("openrouter:") \
-            and not os.environ.get("OPENROUTER_API_KEY"):
+    or_judges = [j for j in (args.judge, args.winner_judge)
+                 if j and j.startswith("openrouter:")]
+    if or_judges and not os.environ.get("OPENROUTER_API_KEY"):
         raise SystemExit(
-            "Judge uses OpenRouter but OPENROUTER_API_KEY is not set.\n"
-            "Either export it, or use --judge verify-only / claude / codex.")
+            f"{or_judges[0]} uses OpenRouter but OPENROUTER_API_KEY is not "
+            "set.\nExport it (Fusion and other OpenRouter judges cost credits), "
+            "or use a non-OpenRouter judge (verify-only / claude / codex).")
     if args.judge == "verify-only" and not args.verify:
         raise SystemExit(
             "--judge verify-only needs a --verify command to judge against.\n"
@@ -996,7 +1000,7 @@ def suggest_loops(cwd):
 
 def main():
     ap = argparse.ArgumentParser(
-        description="loopcraft v0.2.4: stacked-loop agent harness "
+        description="loopcraft v0.2.5: stacked-loop agent harness "
                     "(workers = your local CLI logins, judge = cheap "
                     "OpenRouter). Local/personal use only.")
     ap.add_argument("-g", "--goal", help="single goal to achieve (loop 3/4)")
@@ -1013,7 +1017,12 @@ def main():
                     help="comma list of contenders for race/relay")
     ap.add_argument("--judge", default=DEFAULT_JUDGE,
                     help="verify-only (default, no LLM) | openrouter:<model> "
-                         "| claude | codex")
+                         "| claude | codex | fusion")
+    ap.add_argument("--winner-judge", default=None,
+                    help="race only: judge used JUST for the winner-pick "
+                         "(defaults to --judge). Lets you keep a cheap "
+                         "per-attempt judge but crown the winner with a "
+                         "heavyweight one, e.g. 'fusion'.")
     ap.add_argument("--verify",
                     help="shell command that must pass, e.g. 'pytest -q'. "
                          "Use 'none' to skip (docs-only tasks).")
@@ -1058,6 +1067,13 @@ def main():
                     help="loop 5 forever mode: seconds between polls")
     args = ap.parse_args()
 
+    # `fusion` is a blessed shorthand for OpenRouter's deliberation meta-model.
+    FUSION = "openrouter:openrouter/fusion"
+    if args.judge == "fusion":
+        args.judge = FUSION
+    if args.winner_judge == "fusion":
+        args.winner_judge = FUSION
+
     cwd = Path(args.dir).resolve()
     if not cwd.is_dir():
         raise SystemExit(f"not a directory: {cwd}")
@@ -1074,7 +1090,7 @@ def main():
     log = Log(cwd)
     ensure_git_exclude(cwd)
     acquire_lock(cwd, args.force_unlock, log)
-    log(f"loopcraft v0.2.4 start  project={cwd}  mode={args.mode}  "
+    log(f"loopcraft v0.2.5 start  project={cwd}  mode={args.mode}  "
         f"safety={args.safety}  judge={args.judge}")
     resolve_verify(args, cwd, log)
     preflight(args, cwd, log)

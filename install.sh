@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # loopcraft installer — fetches the single-file harness onto your PATH.
 #
-#   curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.4/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.5/install.sh | bash
 #
-# Pin to a tag (default v0.2.4). Override with env vars:
+# Pin to a tag (default v0.2.5). Override with env vars:
 #   LOOPCRAFT_REF=main   LOOPCRAFT_BIN=/usr/local/bin   bash install.sh
 set -euo pipefail
 
 REPO="oldsnakenewtrik/loopcraft"
-REF="${LOOPCRAFT_REF:-v0.2.4}"
+REF="${LOOPCRAFT_REF:-v0.2.5}"
 DEST="${LOOPCRAFT_BIN:-$HOME/.local/bin}"
 URL="https://raw.githubusercontent.com/${REPO}/${REF}/loopcraft.py"
 

@@ -1,4 +1,4 @@
-# loopcraft v0.2.4
+# loopcraft v0.2.5
 
 A project-agnostic harness that stacks the loops from the "Loopcraft" diagram
 on top of the agent CLIs you already have installed and logged in.
@@ -68,18 +68,18 @@ One file, zero dependencies, Python 3.9+. Pick one:
 **Onto your PATH (run `loopcraft` from any project root or VM):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.4/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.5/install.sh | bash
 ```
 
 Installs to `~/.local/bin/loopcraft` (override with `LOOPCRAFT_BIN`, pin a
 different ref with `LOOPCRAFT_REF`). `curl | bash` runs remote code — the
-one-liner is pinned to the `v0.2.4` tag so it can't change under you; read
+one-liner is pinned to the `v0.2.5` tag so it can't change under you; read
 `install.sh` first if you'd rather not pipe to a shell.
 
 **Or just grab the single file into one project (no install):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.4/loopcraft.py -o loopcraft.py
+curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.5/loopcraft.py -o loopcraft.py
 python3 loopcraft.py --help
 ```
 
@@ -95,7 +95,7 @@ you use and the whole harden-verify-then-launch ritual is available as
 
 ```bash
 mkdir -p ~/.claude/skills/loopcraft
-curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.4/claude-skill/loopcraft/SKILL.md \
+curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.5/claude-skill/loopcraft/SKILL.md \
   -o ~/.claude/skills/loopcraft/SKILL.md
 ```
 
@@ -107,7 +107,7 @@ triggers on the description).
 
 ```bash
 mkdir -p ~/.agents/skills/loopcraft
-curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.4/claude-skill/loopcraft/SKILL.md \
+curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.5/claude-skill/loopcraft/SKILL.md \
   -o ~/.agents/skills/loopcraft/SKILL.md
 ```
 
@@ -276,25 +276,32 @@ working tree contains live production secrets.
 | Judge (semantic) | `openrouter:<cheap model>` | one small call per attempt |
 | Advisory planner | `--worker openrouter` | no file access; plan/diff as text only |
 | $0 semantic judge | `--judge claude` / `--judge codex` | uses quota instead of credits |
-| High-stakes tiebreaker | `--judge openrouter:openrouter/fusion` | multi-model deliberation; best as the **race** winner-picker |
+| Race winner-pick | `--winner-judge fusion` | OpenRouter Fusion — multi-model deliberation, run once to crown the winner |
 
 Judge model is configurable — pass any OpenRouter slug, swap in whatever's cheap
 and good this month, e.g. `--judge openrouter:google/gemini-2.5-flash`.
 
-**OpenRouter Fusion** (`openrouter/fusion`) works as a drop-in here — it's a
-panel of models plus a synthesizing judge. Because it's billed as the *sum* of
-several completions, use it where one expensive, high-stakes decision pays off:
-the **race winner-pick**, which runs once to choose between contenders —
+### `--winner-judge`: Fusion for the race winner-pick
+
+In race mode the winner-pick is a single, high-stakes decision — *which
+contender wins* — so it's the right place for a heavyweight judge even when the
+per-attempt judge is cheap or free. `--winner-judge` sets the judge used **only**
+for that one decision, separately from `--judge`:
 
 ```bash
 python3 loopcraft.py -C ~/code/myproject -g "..." \
   --mode race --race-workers claude,codex \
-  --verify "npm test" --judge openrouter:openrouter/fusion --merge-winner
+  --verify "npm test" --worktree-setup "npm ci" \
+  --judge verify-only \        # cheap/free on every attempt
+  --winner-judge fusion \      # Fusion deliberates ONCE to pick the winner
+  --merge-winner
 ```
 
-Avoid it as the per-attempt loop-3 judge (it fires on every retry — you'd pay a
-whole panel each time; a cheap single model is the right call there). Needs
-`OPENROUTER_API_KEY` and credits.
+`fusion` is a built-in shorthand for `openrouter:openrouter/fusion` (a panel of
+models plus a synthesizing judge). It's billed as the *sum* of several
+completions, which is why it belongs at the once-per-race winner-pick, not as a
+per-attempt judge that fires on every retry. Works for `--judge` too if you
+really want it there. Needs `OPENROUTER_API_KEY` and credits.
 
 ## Preflight & concurrency
 
