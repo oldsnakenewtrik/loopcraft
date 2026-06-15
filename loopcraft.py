@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-loopcraft v0.2.3 — a project-agnostic stacked-loop agent harness.
+loopcraft v0.2.4 — a project-agnostic stacked-loop agent harness.
 
 Loop 1 (tokens)   : inside the model. free.
 Loop 2 (turn)     : one headless CLI invocation (claude -p / codex exec).
@@ -854,13 +854,156 @@ def resolve_verify(args, cwd, log):
     raise SystemExit(msg)
 
 
+# ---------------------------------------------------------------- suggest
+# `--suggest`: a no-LLM, no-execution scan that surfaces loops which already
+# come with a REAL verify. We prefer signals that are objectively gateable
+# (typecheck, lint, build) over vague ideas, because a suggestion is only as
+# good as its verify — the same principle the whole tool rests on.
+
+def _shq(s):
+    """Single-quote a string for safe shell paste (also disables history
+    expansion of '!' and protects pipes/quotes inside a verify)."""
+    return "'" + s.replace("'", "'\\''") + "'"
+
+
+def _pkg_manager(p):
+    if (p / "pnpm-lock.yaml").exists():
+        return "pnpm"
+    if (p / "yarn.lock").exists():
+        return "yarn"
+    return "npm"
+
+
+def _node_scripts(p):
+    try:
+        return json.loads((p / "package.json").read_text()).get("scripts", {})
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return {}
+
+
+def _pyproject_has(p, needle):
+    try:
+        return needle in (p / "pyproject.toml").read_text()
+    except OSError:
+        return False
+
+
+def collect_suggestions(cwd):
+    """Return [(strength, title, goal, verify, why)] from cheap repo signals."""
+    p, out = Path(cwd), []
+    is_node = (p / "package.json").exists()
+    scripts = _node_scripts(p) if is_node else {}
+    pm = _pkg_manager(p)
+    pyrun = "uv run " if (p / "uv.lock").exists() else ""  # the k_dense lesson
+
+    def add(strength, title, goal, verify, why):
+        out.append((strength, title, goal, verify, why))
+
+    # typecheck — exact, ungameable gate
+    if is_node and "typecheck" in scripts:
+        add("strong", "Fix type errors",
+            "Fix every type error until the typecheck command passes clean. "
+            "Do not weaken types with `any` or `@ts-ignore`.",
+            f"{pm} run typecheck",
+            "repo has a typecheck script — passes only when types are sound.")
+    elif _pyproject_has(p, "[tool.mypy]") or (p / "mypy.ini").exists():
+        add("strong", "Fix type errors",
+            "Fix every mypy error until type checking passes clean.",
+            f"{pyrun}mypy .", "mypy is configured — an exact gate.")
+
+    # lint — exact gate
+    if is_node and "lint" in scripts:
+        add("strong", "Fix lint violations",
+            "Fix all lint violations until the linter reports zero errors. "
+            "Fix the code; do not just disable rules.",
+            f"{pm} run lint",
+            "repo has a lint script — green only when violations are gone.")
+    elif _pyproject_has(p, "[tool.ruff]") or (p / "ruff.toml").exists():
+        add("strong", "Fix lint violations",
+            "Fix all ruff violations until `ruff check` is clean.",
+            f"{pyrun}ruff check .", "ruff is configured — an exact gate.")
+
+    # build — succeeds or it doesn't
+    if is_node and "build" in scripts:
+        add("strong", "Make the build pass",
+            "Fix whatever breaks the build until it completes successfully.",
+            f"{pm} run build", "a build is fully falsifiable.")
+
+    # tests — baseline gate; the coverage idea is only medium-trust
+    if is_node and "test" in scripts:
+        test_cmd = f"{pm} test"
+    elif (p / "pyproject.toml").exists() or (p / "setup.py").exists():
+        test_cmd = f"{pyrun}pytest -q"
+    else:
+        test_cmd = detect_verify(p)
+    if test_cmd:
+        add("medium", "Add coverage for an untested area",
+            "Add tests for the least-covered module or behaviour, keeping the "
+            "whole suite green.",
+            test_cmd,
+            "passing tests prove no regression, but NOT that the new tests "
+            "assert anything real — review them, and confirm green at baseline.")
+
+    # TODO/FIXME — upgrade to a real verify by asserting the marker is gone
+    _, found, _ = run_cmd(
+        ["bash", "-lc",
+         "grep -rIlE 'TODO|FIXME|XXX' "
+         "--exclude-dir=.git --exclude-dir=node_modules --exclude-dir=.venv "
+         "--exclude-dir=dist --exclude-dir=build --exclude-dir=.next "
+         "--exclude-dir=coverage --exclude-dir=sandbox "
+         "--exclude=*.lock --exclude=*-lock.json --exclude=*-lock.yaml "
+         ". 2>/dev/null | head -1"],
+        cwd, 30)
+    target = (found.strip().splitlines() or [""])[0]
+    if target:
+        base = test_cmd or "true"
+        add("medium", "Resolve a TODO/FIXME for real",
+            f"Implement the TODO/FIXME markers in {target} properly — do not "
+            "just delete the comments.",
+            f'! grep -qE "TODO|FIXME|XXX" {target} && {base}',
+            "verify asserts the marker is gone AND the suite still passes — "
+            "stronger than 'tests pass' alone, but eyeball that the work is real.")
+
+    # nothing gateable found
+    if not out:
+        add("weak", "Document the project",
+            "Write or improve README.md so a new contributor can set up, run "
+            "and test the project.",
+            "test -f README.md",
+            "no test/lint/build/type signals found — this only checks the file "
+            "exists; harden it (grep for required sections) before walking away.")
+    return out
+
+
+def suggest_loops(cwd):
+    rank = {"strong": 0, "medium": 1, "weak": 2}
+    sug = sorted(collect_suggestions(cwd), key=lambda s: rank.get(s[0], 3))
+    tag = {"strong": "[STRONG verify]", "medium": "[MEDIUM verify]",
+           "weak": "[WEAK verify]"}
+    print(f"\nloopcraft --suggest  ({cwd})")
+    print("Ready-to-run loops, ranked by how trustworthy their verify is.")
+    print("A loop is only as good as its --verify — harden MEDIUM/WEAK ones "
+          "before any hands-off run.\n")
+    for i, (strength, title, goal, verify, why) in enumerate(sug, 1):
+        print(f"{i}. {tag[strength]}  {title}")
+        print(f"   why:  {why}")
+        print(f"   loopcraft -C {cwd} \\")
+        print(f"     -g {_shq(goal)} \\")
+        print(f"     --verify {_shq(verify)} \\")
+        print(f"     --safety strict --max-attempts 3\n")
+    print("Confirm each --verify is green at baseline before the first real run.")
+
+
 def main():
     ap = argparse.ArgumentParser(
-        description="loopcraft v0.2.3: stacked-loop agent harness "
+        description="loopcraft v0.2.4: stacked-loop agent harness "
                     "(workers = your local CLI logins, judge = cheap "
                     "OpenRouter). Local/personal use only.")
     ap.add_argument("-g", "--goal", help="single goal to achieve (loop 3/4)")
     ap.add_argument("--backlog", help="markdown checklist of goals (loop 5)")
+    ap.add_argument("--suggest", action="store_true",
+                    help="inspect -C and print a few ready-to-run loops "
+                         "(goals + real verify commands), then exit. No agents.")
     ap.add_argument("-C", "--dir", default=".", help="target project directory")
     ap.add_argument("--worker", default=DEFAULT_WORKER,
                     choices=list(WORKERS), help="worker for single mode")
@@ -915,18 +1058,23 @@ def main():
                     help="loop 5 forever mode: seconds between polls")
     args = ap.parse_args()
 
-    if not args.goal and not args.backlog:
-        ap.error("provide --goal or --backlog")
-    if args.forever and not args.max_goals:
-        ap.error("--forever requires --max-goals N (quota protection)")
     cwd = Path(args.dir).resolve()
     if not cwd.is_dir():
         raise SystemExit(f"not a directory: {cwd}")
 
+    if args.suggest:
+        suggest_loops(cwd)
+        sys.exit(0)
+
+    if not args.goal and not args.backlog:
+        ap.error("provide --goal or --backlog (or --suggest to get ideas)")
+    if args.forever and not args.max_goals:
+        ap.error("--forever requires --max-goals N (quota protection)")
+
     log = Log(cwd)
     ensure_git_exclude(cwd)
     acquire_lock(cwd, args.force_unlock, log)
-    log(f"loopcraft v0.2.3 start  project={cwd}  mode={args.mode}  "
+    log(f"loopcraft v0.2.4 start  project={cwd}  mode={args.mode}  "
         f"safety={args.safety}  judge={args.judge}")
     resolve_verify(args, cwd, log)
     preflight(args, cwd, log)

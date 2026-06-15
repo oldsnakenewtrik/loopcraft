@@ -70,6 +70,12 @@ by default and refuses to run if Codex is on API-key auth — unless
 
 ## Step 1 — Nail the verify command (the hard part)
 
+**Shortcut:** if you don't yet have a goal in mind, run `loopcraft -C <repo>
+--suggest` first. It scans the repo (no LLM/agents/execution) and prints
+ready-to-run loops with goals + real verify commands attached, ranked by verify
+trustworthiness — a fast way to find STRONG-verify work (typecheck/lint/build).
+Then still apply Steps 1–2 to whichever you pick.
+
 Find the **one command that asserts success**. Three required properties:
 
 1. **Correct runner** — what the project actually uses, not the generic name. A

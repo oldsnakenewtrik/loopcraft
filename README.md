@@ -1,4 +1,4 @@
-# loopcraft v0.2.3
+# loopcraft v0.2.4
 
 A project-agnostic harness that stacks the loops from the "Loopcraft" diagram
 on top of the agent CLIs you already have installed and logged in.
@@ -68,18 +68,18 @@ One file, zero dependencies, Python 3.9+. Pick one:
 **Onto your PATH (run `loopcraft` from any project root or VM):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.3/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.4/install.sh | bash
 ```
 
 Installs to `~/.local/bin/loopcraft` (override with `LOOPCRAFT_BIN`, pin a
 different ref with `LOOPCRAFT_REF`). `curl | bash` runs remote code — the
-one-liner is pinned to the `v0.2.3` tag so it can't change under you; read
+one-liner is pinned to the `v0.2.4` tag so it can't change under you; read
 `install.sh` first if you'd rather not pipe to a shell.
 
 **Or just grab the single file into one project (no install):**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.3/loopcraft.py -o loopcraft.py
+curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.4/loopcraft.py -o loopcraft.py
 python3 loopcraft.py --help
 ```
 
@@ -97,6 +97,19 @@ A Claude Code skill is bundled under `claude-skill/loopcraft/` — copy it to
 
 (`install.sh` puts `loopcraft` on your PATH; the examples below use
 `python3 loopcraft.py` but `loopcraft …` works identically once installed.)
+
+## Not sure what to run? `--suggest`
+
+```bash
+loopcraft -C ~/code/myproject --suggest
+```
+
+Scans the repo (no LLM, no agents, no execution) and prints a few ready-to-run
+loops — each with a goal **and** a real verify command already attached, ranked
+by how trustworthy that verify is. It favours objectively gateable work
+(typecheck, lint, build) over vague ideas, because a loop is only as good as its
+`--verify`. STRONG suggestions are safe to run as-is; MEDIUM/WEAK ones tell you
+what to harden first. Copy the one you want, confirm it's green at baseline, run.
 
 ## Start here (prove loop 3 first)
 
