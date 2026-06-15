@@ -276,9 +276,25 @@ working tree contains live production secrets.
 | Judge (semantic) | `openrouter:<cheap model>` | one small call per attempt |
 | Advisory planner | `--worker openrouter` | no file access; plan/diff as text only |
 | $0 semantic judge | `--judge claude` / `--judge codex` | uses quota instead of credits |
+| High-stakes tiebreaker | `--judge openrouter:openrouter/fusion` | multi-model deliberation; best as the **race** winner-picker |
 
-Judge model is configurable — swap in whatever's cheap and good this month,
-e.g. `--judge openrouter:google/gemini-2.5-flash`.
+Judge model is configurable — pass any OpenRouter slug, swap in whatever's cheap
+and good this month, e.g. `--judge openrouter:google/gemini-2.5-flash`.
+
+**OpenRouter Fusion** (`openrouter/fusion`) works as a drop-in here — it's a
+panel of models plus a synthesizing judge. Because it's billed as the *sum* of
+several completions, use it where one expensive, high-stakes decision pays off:
+the **race winner-pick**, which runs once to choose between contenders —
+
+```bash
+python3 loopcraft.py -C ~/code/myproject -g "..." \
+  --mode race --race-workers claude,codex \
+  --verify "npm test" --judge openrouter:openrouter/fusion --merge-winner
+```
+
+Avoid it as the per-attempt loop-3 judge (it fires on every retry — you'd pay a
+whole panel each time; a cheap single model is the right call there). Needs
+`OPENROUTER_API_KEY` and credits.
 
 ## Preflight & concurrency
 

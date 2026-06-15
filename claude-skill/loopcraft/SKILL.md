@@ -184,7 +184,10 @@ failed*, since those mean very different things.
   deps, so pass `--worktree-setup "<install cmd>"` if verify needs them; and to
   actually *pick the best* of several passers use an LLM judge
   (`--judge claude`/`codex`/`openrouter:<model>`) — `verify-only` just takes the
-  first. Loser branches are pruned unless `--keep-branches`.
+  first. The winner-pick is one high-stakes call, so it's the right place for a
+  heavyweight judge like `--judge openrouter:openrouter/fusion` (multi-model
+  deliberation; too costly as a per-attempt judge). Loser branches are pruned
+  unless `--keep-branches`.
   `--mode race --race-workers claude,codex --worktree-setup "npm ci" --judge claude --merge-winner`
 - **Relay** — builder/reviewer alternation in one tree (already has deps); judge
   referees. `--mode relay --race-workers claude,codex`
