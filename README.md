@@ -83,8 +83,39 @@ curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.4/lo
 python3 loopcraft.py --help
 ```
 
-A Claude Code skill is bundled under `claude-skill/loopcraft/` — copy it to
-`~/.claude/skills/loopcraft/` to drive the whole ritual with `/loopcraft`.
+### Drive it with a skill (Claude Code & Codex)
+
+A skill is bundled under `claude-skill/loopcraft/SKILL.md`. Both Claude Code and
+Codex use the *same* `SKILL.md` format (YAML `name`/`description` + a markdown
+body) — only the install directory differs. Install it once for whichever agent
+you use and the whole harden-verify-then-launch ritual is available as
+`/loopcraft`.
+
+**Claude Code** — install to `~/.claude/skills/loopcraft/`:
+
+```bash
+mkdir -p ~/.claude/skills/loopcraft
+curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.4/claude-skill/loopcraft/SKILL.md \
+  -o ~/.claude/skills/loopcraft/SKILL.md
+```
+
+Invoke with `/loopcraft` (or just describe an unattended, test-gated run — it
+triggers on the description).
+
+**Codex** — Codex discovers skills from `~/.agents/skills/<name>/SKILL.md`
+(user-scoped) or `.agents/skills/<name>/SKILL.md` (repo-local):
+
+```bash
+mkdir -p ~/.agents/skills/loopcraft
+curl -fsSL https://raw.githubusercontent.com/oldsnakenewtrik/loopcraft/v0.2.4/claude-skill/loopcraft/SKILL.md \
+  -o ~/.agents/skills/loopcraft/SKILL.md
+```
+
+Invoke in Codex via `/skills` or by mentioning `$loopcraft`; it also triggers
+implicitly when a task matches the description.
+
+(Cloned the repo instead? Just `cp -r claude-skill/loopcraft ~/.claude/skills/`
+or `~/.agents/skills/`.)
 
 ## Setup
 
