@@ -68,6 +68,11 @@ Loopcraft strips `ANTHROPIC_API_KEY`/`OPENAI_API_KEY` from worker subprocesses
 by default and refuses to run if Codex is on API-key auth — unless
 `--allow-api-billing` is passed. Local/personal use under the user's own logins.
 
+If a CLI is missing: Claude Code → `curl -fsSL https://claude.ai/install.sh |
+bash` (or `npm install -g @anthropic-ai/claude-code`); Codex → `npm install -g
+@openai/codex` (or `brew install --cask codex`). Then `claude` / `codex login`
+to sign in. Full options in the repo README.
+
 ## Step 1 — Nail the verify command (the hard part)
 
 **Shortcut:** if you don't yet have a goal in mind, run `loopcraft -C <repo>

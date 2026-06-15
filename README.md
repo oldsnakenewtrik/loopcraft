@@ -88,14 +88,42 @@ A Claude Code skill is bundled under `claude-skill/loopcraft/` — copy it to
 
 ## Setup
 
-1. Log in once interactively to each CLI you'll use:
-   - `claude` (Claude Code — sign in with your subscription account)
-   - `codex login` (Codex — sign in with ChatGPT)
-2. (Optional) `export OPENROUTER_API_KEY=sk-or-...` — only needed if you want
-   semantic judging. The default `verify-only` judge needs no key and no
-   credits.
+Loopcraft drives the official agent CLIs you already have. Install and log into
+at least one — `claude` and/or `codex`.
 
-(`install.sh` puts `loopcraft` on your PATH; the examples below use
+**1. Install the worker CLI(s).**
+
+*Claude Code* — docs: <https://code.claude.com/docs/en/setup> (needs a Claude
+Pro/Max/Team/Enterprise plan):
+
+```bash
+curl -fsSL https://claude.ai/install.sh | bash      # macOS / Linux / WSL (recommended)
+# or:  brew install --cask claude-code
+# or:  npm install -g @anthropic-ai/claude-code      # requires Node.js 18+
+# Windows PowerShell:  irm https://claude.ai/install.ps1 | iex
+```
+
+*Codex* — docs: <https://github.com/openai/codex> (needs a ChatGPT
+Plus/Pro/Business/Edu/Enterprise plan):
+
+```bash
+npm install -g @openai/codex                          # requires Node.js 18+
+# or:  brew install --cask codex
+```
+
+**2. Log in once, interactively** — loopcraft never reads, proxies, or stores
+these tokens:
+
+- `claude` — launch it and sign in via the browser prompt (then `claude /status`
+  to confirm you're on your subscription, not API billing)
+- `codex login` — sign in **with ChatGPT**, not an API key. Loopcraft refuses to
+  run Codex on API-key auth (it bills your OpenAI Platform account) unless you
+  pass `--allow-api-billing`.
+
+**3. (Optional)** `export OPENROUTER_API_KEY=sk-or-...` — only needed for
+`--judge openrouter:<model>`. The default `verify-only` judge needs no key.
+
+(`install.sh` above puts `loopcraft` itself on your PATH; the examples below use
 `python3 loopcraft.py` but `loopcraft …` works identically once installed.)
 
 ## Not sure what to run? `--suggest`
